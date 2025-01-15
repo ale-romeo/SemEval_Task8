@@ -111,7 +111,7 @@ def load_dataset_into_db(dataset_id):
     """
     # Load the dataset
     df = pd.read_parquet(f"hf://datasets/cardiffnlp/databench/data/{dataset_id}/all.parquet")
-
+    
     for col in df.columns:
         if df[col].dtype.kind == 'O' and any(isinstance(val, (list, np.ndarray)) for val in df[col].dropna()):
             df[col] = df[col].apply(
@@ -119,6 +119,8 @@ def load_dataset_into_db(dataset_id):
             )
             
     df.columns = [clean_column_name(col) for col in df.columns]
+    
+    df = df.loc[:,~df.columns.duplicated()].copy()
     
     # Create a PostgreSQL connection using SQLAlchemy engine
     engine = create_engine('postgresql://myuser:mypassword@localhost:5432/mydb')
