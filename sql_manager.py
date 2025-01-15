@@ -96,7 +96,8 @@ def clean_column_name(name):
         str: The cleaned column name.
     """
     # Remove emojis and special characters (keep only alphanumeric and underscores)
-    cleaned_name = re.sub(r'[^\w\s]', '', name).strip().lower()
+    cleaned_name = re.sub(r'[^\w\s]', '', name).strip().lower().replace(' ', '_')
+
     return cleaned_name
 
 def load_dataset_into_db(dataset_id):
@@ -118,10 +119,20 @@ def load_dataset_into_db(dataset_id):
                 lambda x: ', '.join(map(str, x)) if isinstance(x, (list, np.ndarray)) else str(x) if x is not None else ''
             )
             
-    df.columns = [clean_column_name(col) for col in df.columns]
+    cleaned_columns = [clean_column_name(col) for col in df.columns]
     
-    df = df.loc[:,~df.columns.duplicated()].copy()
-    
+    seen = {}
+    unique_columns = []
+    for col in cleaned_columns:
+        if col in seen:
+            seen[col] += 1
+            unique_columns.append(f"{col}_{seen[col]}")
+        else:
+            seen[col] = 0
+            unique_columns.append(col)
+
+    df.columns = unique_columns
+
     # Create a PostgreSQL connection using SQLAlchemy engine
     engine = create_engine('postgresql://myuser:mypassword@localhost:5432/mydb')
     
