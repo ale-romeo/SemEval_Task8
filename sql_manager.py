@@ -96,7 +96,7 @@ def clean_column_name(name):
         str: The cleaned column name.
     """
     # Remove emojis and special characters (keep only alphanumeric and underscores)
-    cleaned_name = re.sub(r'[^\w\s]', '', name).strip().lower().replace(' ', '_')
+    cleaned_name = re.sub(r'[^\w\s]', '', name).strip().lower()
 
     return cleaned_name
 
@@ -109,30 +109,25 @@ def load_dataset_into_db(dataset_id):
         
     Returns:
         psycopg2.Connection: A connection to the PostgreSQL database.
+        pd.DataFrame: The loaded DataFrame.
     """
     # Load the dataset
     df = pd.read_parquet(f"hf://datasets/cardiffnlp/databench/data/{dataset_id}/all.parquet")
     
+    # Convert list or array-like object columns to strings
     for col in df.columns:
         if df[col].dtype.kind == 'O' and any(isinstance(val, (list, np.ndarray)) for val in df[col].dropna()):
             df[col] = df[col].apply(
                 lambda x: ', '.join(map(str, x)) if isinstance(x, (list, np.ndarray)) else str(x) if x is not None else ''
             )
-            
-    cleaned_columns = [clean_column_name(col) for col in df.columns]
     
-    seen = {}
-    unique_columns = []
-    for col in cleaned_columns:
-        if col in seen:
-            seen[col] += 1
-            unique_columns.append(f"{col}_{seen[col]}")
-        else:
-            seen[col] = 0
-            unique_columns.append(col)
-
-    df.columns = unique_columns
-
+    # Clean column names
+    cleaned_columns = [clean_column_name(col)[:63] for col in df.columns]
+    
+    # Remove duplicate columns by keeping only the first occurrence
+    df.columns = cleaned_columns
+    df = df.loc[:, ~df.columns.duplicated(keep='first')]
+    
     # Create a PostgreSQL connection using SQLAlchemy engine
     engine = create_engine('postgresql://myuser:mypassword@localhost:5432/mydb')
     
