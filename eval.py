@@ -5,18 +5,15 @@ from tqdm import tqdm
 from typing import Callable, List, Union, Optional
 from datasets import Dataset
 
-from .utils import load_qa
-
 class Evaluator:
     def __init__(
         self,
         compare: Optional[Callable] = None,
         qa: Optional[Dataset] = None,
         batch_size: int = 10,
-        **kwargs,
     ):
         self.compare = compare if compare else self.default_compare
-        self.qa = qa if qa is not None else load_qa(**kwargs)
+        self.qa = qa
 
     def default_compare(self, value, truth, semantic):
         STRIP_CHARS = "[]'\" "
