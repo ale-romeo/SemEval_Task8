@@ -100,7 +100,7 @@ def clean_column_name(name):
 
     return cleaned_name
 
-def load_dataset_into_db(dataset_id):
+def load_dataset_into_db(dataset_id, engine):
     """
     Loads a dataset by its ID and stores it in a PostgreSQL database.
     
@@ -127,21 +127,17 @@ def load_dataset_into_db(dataset_id):
     # Remove duplicate columns by keeping only the first occurrence
     df.columns = cleaned_columns
     df = df.loc[:, ~df.columns.duplicated(keep='first')]
-    
-    # Create a PostgreSQL connection using SQLAlchemy engine
-    engine = create_engine('postgresql://myuser:mypassword@localhost:5432/mydb')
-    
-    # Write the DataFrame to the PostgreSQL database
-    df.to_sql(dataset_id.split('_')[1].lower() if dataset_id != '001_Forbes' else "billionaires", engine, index=False, if_exists="replace")
-    
-    # Create a connection using psycopg2
+
     conn = psycopg2.connect(
         dbname="mydb",
         user="myuser",
         password="mypassword",
-        host="localhost",
-        port="5432"
+        host="localhost"
     )
+
+    # Write the DataFrame to the PostgreSQL database
+    table_name = dataset_id.split('_')[1].lower() if dataset_id != '001_Forbes' else "billionaires"
+    df.to_sql(table_name, engine, index=False, if_exists="replace")
     
     return conn, df
 
