@@ -96,7 +96,7 @@ def clean_column_name(name):
         str: The cleaned column name.
     """
     # Remove emojis and special characters (keep only alphanumeric and underscores)
-    cleaned_name = re.sub(r'[^\w\s]', '', name).strip().lower()
+    cleaned_name = re.sub(r'[^\w\s]', '', name).strip().lower().replace(' ', '_') 
 
     return cleaned_name
 
