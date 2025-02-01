@@ -56,7 +56,7 @@ def process_batch(tokenizer, model, engine, predictor, batch):
             )
 
             generated_query = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0].split("[SQL]")[-1].strip()
-            print(generated_query)
+            
             if not generated_query.strip():
                 print(f"Empty SQL query generated for: {question}")
                 continue

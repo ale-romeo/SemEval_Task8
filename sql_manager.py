@@ -59,8 +59,8 @@ def generate_sql_prompt(schema, dataset_id, question):
         Generate a SQL query to answer [QUESTION]{question}[/QUESTION]
 
         ### Database Schema
-        The query will run on a database with the following schema:
-        {schema}
+        The query will run on a table named {table_name} with the following schema:
+        {column_types}
 
         ### Answer
         Given the database schema, here is the SQL query that [QUESTION]{question}[/QUESTION]
