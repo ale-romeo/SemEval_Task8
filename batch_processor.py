@@ -1,5 +1,3 @@
-import time
-from SemEval_Task8.utils import label_answer_type
 from SemEval_Task8.sql_manager import (
     generate_sql_prompt,
     load_dataset_into_db,
@@ -61,16 +59,15 @@ def process_batch(tokenizer, model, engine, predictor, batch):
                 print(f"Empty SQL query generated for: {question}")
                 continue
 
-            preprocessed_query = preprocess_query_for_postgresql(generated_query, schema.columns)
-
+            preprocessed_query = preprocess_query_for_postgresql(generated_query, schema)
+            
             try:
                 result = execute_sql_query(conn, preprocessed_query)
 
             except Exception as e:
                 result = f"Execution Error: {str(e)}"
 
-            processed_result = post_process_result(result, predicted_type)
-
+            processed_result = post_process_result(result, predicted_type, schema)
             results.append({"question": question, "result": processed_result, "type": predicted_type})
 
         except Exception as e:

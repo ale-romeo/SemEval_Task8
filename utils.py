@@ -1,5 +1,4 @@
 import re
-import ast
 
 def clean_column_name(name):
     """
@@ -8,89 +7,89 @@ def clean_column_name(name):
     cleaned_name = re.sub(r'[^\w\s]', '', name).strip().lower().replace(' ', '_')
     return cleaned_name
 
-def label_answer_type(gt):
+def post_process_result(result, expected_type, schema):
     """
-    Labels the expected type of the answer based on its format.
-    """
-    gt = str(gt).strip()
-
-    # Boolean
-    if gt.lower() in ['true', 'false', 'y', 'n', 'yes', 'no']:
-        return 'boolean'
-
-    # List
-    if gt.startswith('[') and gt.endswith(']'):
-        try:
-            parsed_list = ast.literal_eval(gt)
-            if all(isinstance(item, (int, float)) for item in parsed_list):
-                return 'list[number]'
-            elif all(isinstance(item, str) for item in parsed_list):
-                return 'list[category]'
-        except (ValueError, SyntaxError):
-            pass
-
-    # Number
-    try:
-        float(gt)
-        return 'number'
-    except ValueError:
-        pass
-
-    # Default to category
-    return 'category'
-
-def post_process_result(result, expected_type):
-    """
-    Post-processes the SQL query result to match the expected format.
+    Post-processes the SQL query result to match the expected answer type.
 
     Args:
-        result (list): The raw result from the SQL query execution.
-        expected_type (str): The expected type of the answer ('boolean', 'category', 'number', 'list[category]', 'list[number]').
+        result (list): Raw query result from SQL execution.
+        expected_type (str): Expected format ('boolean', 'number', 'list[number]', 'category', 'list[category]').
+        schema (pd.DataFrame): Schema containing column names and types.
 
     Returns:
-        str: A processed result in the correct format.
+        str: Formatted result.
     """
-    # Handle empty results
-    if not result or result == [None]:
-        return "False" if expected_type == "boolean" else "No result"
+    if not result:
+        return "No result"
 
-    # Process based on expected type
-    if expected_type == "boolean":
-        # A boolean answer is True/False
-        value = result[0][0]  # Assume the first element in the first row
-        if isinstance(value, str):
-            value = value.lower() in ["true", "yes", "y", "1"]
-        elif isinstance(value, (int, float)):
-            value = bool(value)
-        return "True" if value else "False"
+    # **Identify column types dynamically**
+    numeric_columns = [
+        col for col in schema.columns 
+        if schema.dtypes[col] in ["float64", "int64", "Float64", "Int64"]
+    ]
+    text_columns = [
+        col for col in schema.columns
+        if schema.dtypes[col] in ["object", "string", "category"]
+    ]
 
-    elif expected_type == "number":
-        # Convert the first value to a number
-        value = result[0][0]
+    # ✅ **Boolean Handling**
+    if expected_type == 'boolean':
+        return "True" if result and result[0][0] else "False"
+
+    # ✅ **Single Number Extraction**
+    elif expected_type == 'number':
         try:
-            return str(round(float(value), 2))  # Round to 2 decimal places
-        except (ValueError, TypeError):
+            for row in result:
+                numeric_values = [float(value) for value in row if isinstance(value, (int, float))]
+                if numeric_values:
+                    return str(numeric_values[0])  # Extract first valid number
+        except Exception:
             return "Invalid number"
 
-    elif expected_type == "category":
-        # Return the first value as a category
-        value = result[0][0]
-        return str(value).strip()
-
-    elif expected_type == "list[category]":
-        # Extract all distinct category values
-        values = [row[0] for row in result if row[0] is not None]
-        return f"[{', '.join(map(str, values))}]"
-
-    elif expected_type == "list[number]":
-        # Extract all distinct numerical values
+    # ✅ **List of Numbers (Generalized Selection)**
+    elif expected_type == 'list[number]':
         try:
-            numbers = [float(row[0]) for row in result if row[0] is not None]
-            numbers = sorted(set(numbers))  # Remove duplicates and sort
-            return f"[{', '.join(map(lambda x: str(round(x, 2)), numbers))}]"
-        except ValueError:
+            numerical_values = []
+            for row in result:
+                row_values = [float(value) for value in row if isinstance(value, (int, float))]
+
+                # If two columns exist and first is string, take second (ignore identifiers)
+                if len(row) == 2:
+                    first, second = row
+                    if isinstance(first, str) and first.strip():  # First column is an identifier (string)
+                        numerical_values.append(float(second))  # Take second column
+                    else:
+                        numerical_values.append(float(first))  # Otherwise, take first if numeric
+
+                # If there are multiple numbers in the row, take the second column if it exists
+                elif len(row_values) >= 1:
+                    numerical_values.append(row_values[-1])  # Pick the most relevant number
+
+            return str(numerical_values) if numerical_values else "Invalid list of numbers"
+
+        except Exception:
             return "Invalid list of numbers"
 
-    # Fallback for unexpected types
-    return "Invalid expected type"
+    # ✅ **Category Extraction**
+    elif expected_type == 'category':
+        try:
+            return str(result[0][0])  # Extract first column value as string
+        except IndexError:
+            return "Invalid category"
+
+    # ✅ **List of Categories (Handles `None`)**
+    elif expected_type == 'list[category]':
+        try:
+            extracted_categories = []
+            for row in result:
+                for value in row:
+                    if isinstance(value, str) and value.strip():
+                        extracted_categories.append(value.strip())
+
+            return str(extracted_categories) if extracted_categories else "Invalid list of categories"
+        except Exception:
+            return "Invalid list of categories"
+
+    # ❌ **Fallback for Unexpected Cases**
+    return "Invalid format"
 

@@ -5,6 +5,7 @@ import pandas as pd
 import psycopg2
 import numpy as np
 from SemEval_Task8.utils import clean_column_name
+from sqlalchemy.types import Integer, Float, Boolean, String, DateTime
 
 def execute_sql_query(conn, query):
     """
@@ -20,13 +21,7 @@ def execute_sql_query(conn, query):
     try:
         cursor = conn.cursor()
         cursor.execute(query)
-
-        # Handle SELECT vs. non-SELECT queries
-        if cursor.description:
-            result = cursor.fetchall()  # Fetch results for SELECT queries
-        else:
-            conn.commit()  # Commit for INSERT/UPDATE queries
-            result = "Query executed successfully."
+        result = cursor.fetchall()  # Fetch results for SELECT queries
 
         cursor.close()  # Close the cursor
         conn.close()  # Close the connection
@@ -36,6 +31,7 @@ def execute_sql_query(conn, query):
     except Exception as e:
         conn.close()  # Ensure connection is closed on error
         return f"Error during execution: {str(e)}"
+
 
 def generate_sql_prompt(schema, dataset_id, question):
     """
@@ -58,19 +54,34 @@ def generate_sql_prompt(schema, dataset_id, question):
         ### Task
         Generate a SQL query to answer [QUESTION]{question}[/QUESTION]
 
-        ### Database Schema
-        The query will run on a table named {table_name} with the following schema:
+        ### Table Schema
+        The query will run on ONE SINGLE table named {table_name} with the following schema:
         {column_types}
 
         ### Answer
-        Given the database schema, here is the SQL query that [QUESTION]{question}[/QUESTION]
+        Given the table schema, here is the SQL query that [QUESTION]{question}[/QUESTION]
         [SQL]
     """
     return prompt
 
+def map_dtype_to_sqlalchemy(dtype):
+    """
+    Maps Pandas dtypes to SQLAlchemy-compatible types.
+    """
+    if pd.api.types.is_integer_dtype(dtype):
+        return Integer
+    elif pd.api.types.is_float_dtype(dtype):
+        return Float
+    elif pd.api.types.is_bool_dtype(dtype):
+        return Boolean
+    elif pd.api.types.is_datetime64_any_dtype(dtype):
+        return DateTime
+    else:
+        return String  # Default fallback
+
 def load_dataset_into_db(dataset_id, engine, retries=5, delay=5, cache_dir="./hf_cache"):
     """
-    Loads a dataset into PostgreSQL and ensures proper connection handling.
+    Loads a dataset into PostgreSQL while ensuring proper type conversion.
     Implements retries & caching to guarantee dataset retrieval.
 
     Args:
@@ -82,7 +93,7 @@ def load_dataset_into_db(dataset_id, engine, retries=5, delay=5, cache_dir="./hf
 
     Returns:
         psycopg2.Connection: A connection to the PostgreSQL database.
-        pd.DataFrame: The loaded DataFrame.
+        pd.DataFrame: The loaded DataFrame with correct column types.
     """
     dataset_path = os.path.join(cache_dir, f"{dataset_id}.parquet")
 
@@ -113,20 +124,29 @@ def load_dataset_into_db(dataset_id, engine, retries=5, delay=5, cache_dir="./hf
         print(f"❌ Failed to load dataset {dataset_id}. Returning an empty DataFrame.")
         df = pd.DataFrame(columns=["error"], data=[["Dataset unavailable"]])
 
-     # 🔹 **Convert Categorical Columns to Strings**
-    for col in df.select_dtypes(include=['category']).columns:
-        df[col] = df[col].astype(str)
-
-    # 🔹 **Convert Lists/NumPy Arrays to Strings**
+    # ✅ Restore Correct Data Types
     for col in df.columns:
-        df[col] = df[col].apply(
-            lambda x: ', '.join(map(str, x)) if isinstance(x, (np.ndarray, list)) else str(x) if pd.notnull(x) else ''
-        )
+        # Convert `category` columns back to `category`
+        if df[col].dtype.name == "category":
+            df[col] = df[col].astype("category")
 
-    # 🔹 **Convert Datetime Columns to Strings**
-    for col in df.columns:
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-            df[col] = df[col].astype(str)
+        # Preserve Numeric Columns (Avoid Converting to `object`)
+        elif df[col].dtype.name in ["uint16", "uint32", "float64", "int64"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        # Preserve Boolean Columns
+        elif df[col].dtype.name == "bool":
+            df[col] = df[col].astype(bool)
+
+        # Convert `datetime` columns to actual datetime64 format
+        elif pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = pd.to_datetime(df[col])
+
+        # Convert Lists/NumPy Arrays to Strings for compatibility
+        elif any(isinstance(val, (np.ndarray, list)) for val in df[col].dropna()):
+            df[col] = df[col].apply(
+                lambda x: ', '.join(map(str, x)) if isinstance(x, (np.ndarray, list)) else str(x) if pd.notnull(x) else ''
+            )
 
     # Clean and process column names
     cleaned_columns = [clean_column_name(col)[:63] for col in df.columns]
@@ -136,8 +156,11 @@ def load_dataset_into_db(dataset_id, engine, retries=5, delay=5, cache_dir="./hf
     # Define table name
     table_name = dataset_id.split('_')[1].lower() if dataset_id != '001_Forbes' else "billionaires"
 
-    # Write DataFrame to PostgreSQL
-    df.to_sql(table_name, engine, index=False, if_exists="replace")
+    # ✅ **Explicitly map column types**
+    dtype_mapping = {col: map_dtype_to_sqlalchemy(df[col].dtype) for col in df.columns}
+
+    # Write DataFrame to PostgreSQL with explicit dtypes
+    df.to_sql(table_name, engine, index=False, if_exists="replace", dtype=dtype_mapping)
 
     # Open a new connection after writing the data
     conn = psycopg2.connect(
@@ -150,24 +173,112 @@ def load_dataset_into_db(dataset_id, engine, retries=5, delay=5, cache_dir="./hf
 
     return conn, df
 
-def preprocess_query_for_postgresql(query, df_columns):
+
+def preprocess_query_for_postgresql(query, schema):
     """
-    Preprocesses the SQL query for PostgreSQL by escaping case-sensitive column names.
+    Preprocesses the SQL query for PostgreSQL by:
+    1. Ensuring numeric columns are properly cast to FLOAT.
+    2. Fixing ORDER BY issues for numeric fields.
+    3. Fixing SUM(), AVG(), COUNT() on text fields by casting them to NUMERIC.
+    4. Fixing comparisons where TEXT is used as NUMBER or BOOLEAN.
 
     Args:
         query (str): The generated SQL query.
-        df_columns (list): List of table column names.
+        schema (pd.DataFrame): A DataFrame containing a sample row to infer column types.
 
     Returns:
-        str: Preprocessed SQL query with escaped column names.
+        str: Preprocessed SQL query with fixes applied.
     """
     try:
-        # Ensure column names are formatted correctly for PostgreSQL
-        pattern = re.compile(r'\b(' + '|'.join(re.escape(col) for col in df_columns) + r')\b(?!")')
-        preprocessed_query = pattern.sub(lambda match: f'"{match.group(1)}"', query)
+        if isinstance(schema, pd.DataFrame):
+            df_columns = schema.columns.tolist()  # Get column names
+            column_types = schema.dtypes  # Get column types
+        else:
+            raise ValueError("Schema must be a Pandas DataFrame.")
 
-        return preprocessed_query
+        # Identify column types dynamically
+        numeric_columns = [col for col in df_columns if column_types[col] in ["float64", "int64", "Float64", "Int64"]]
+        boolean_columns = [col for col in df_columns if column_types[col] in ["bool", "boolean"]]
+        text_columns = [col for col in df_columns if column_types[col] in ["object", "string", "category"]]
+
+         # 🔹 **Fix Missing `GROUP BY` Columns**
+        if "GROUP BY" in query:
+            # Extract all selected columns
+            select_columns = re.findall(r'SELECT\s+(.*?)\s+FROM', query, re.IGNORECASE)
+            if select_columns:
+                select_columns = select_columns[0].split(",")
+                select_columns = [col.strip().replace("AS", "").split()[0] for col in select_columns]
+
+                # Extract columns already in GROUP BY
+                group_by_columns = re.findall(r'GROUP BY\s+(.*?)(ORDER BY|LIMIT|$)', query, re.IGNORECASE)
+                if group_by_columns:
+                    group_by_columns = group_by_columns[0][0].split(",")
+                    group_by_columns = [col.strip() for col in group_by_columns]
+                else:
+                    group_by_columns = []
+
+                # Find missing columns and add them
+                missing_group_by = [col for col in select_columns if col not in group_by_columns and col in df_columns]
+                if missing_group_by:
+                    group_by_clause = f"GROUP BY {', '.join(group_by_columns + missing_group_by)}"
+                    query = re.sub(r'GROUP BY\s+(.*?)(ORDER BY|LIMIT|$)', group_by_clause + r' \2', query, flags=re.IGNORECASE)
+
+        # 🔹 **Fix MEDIAN() Calls**
+        query = re.sub(
+            r'MEDIAN\(\s*([\w\.]+)\s*\)',
+            r'PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY \1)',
+            query,
+            flags=re.IGNORECASE
+        )
+
+        # 🔹 Ensure ORDER BY works correctly for numeric columns
+        for col in numeric_columns:
+            query = re.sub(
+                rf'ORDER BY (\w+)\.{col}',
+                f'ORDER BY CAST({col} AS FLOAT)',
+                query,
+                flags=re.IGNORECASE
+            )
+
+        # 🔹 Fix SUM, AVG, COUNT on text fields by casting to FLOAT
+        for col in numeric_columns:
+            query = re.sub(
+                rf'(SUM|AVG|COUNT)\(\s*{col}\s*\)',
+                r'\1(CAST({col} AS FLOAT))',
+                query,
+                flags=re.IGNORECASE
+            )
+
+        # 🔹 Fix numeric comparisons (TEXT stored as NUMBER)
+        for col in numeric_columns:
+            query = re.sub(
+                rf'WHERE\s+{col}\s*([=><!]+)\s*(\d+)',
+                rf'WHERE CAST({col} AS FLOAT) \1 \2',
+                query,
+                flags=re.IGNORECASE
+            )
+
+        # 🔹 Fix boolean comparisons (TEXT stored as BOOLEAN)
+        for col in boolean_columns:
+            query = re.sub(
+                rf'WHERE\s+{col}\s*=\s*(TRUE|FALSE)',
+                rf'WHERE CAST({col} AS BOOLEAN) = \1',
+                query,
+                flags=re.IGNORECASE
+            )
+
+        # 🔹 Fix text comparisons (Ensure correct handling of category columns)
+        for col in text_columns:
+            query = re.sub(
+                rf'WHERE\s+{col}\s*=\s*([^\'"].+?)\s*(AND|OR|$)',
+                rf'WHERE {col}::TEXT = \1 \2',
+                query,
+                flags=re.IGNORECASE
+            )
+
+        return query
+
     except Exception as e:
-        print(f"Error preprocessing query: {str(e)}")
+        print(f"⚠️ Error preprocessing query: {str(e)}")
         return query
 
