@@ -4,6 +4,7 @@ import os
 import pandas as pd
 import psycopg2
 import numpy as np
+from sqlalchemy import BigInteger
 from SemEval_Task8.utils import clean_column_name
 from sqlalchemy.types import Integer, Float, Boolean, String, DateTime
 
@@ -69,7 +70,7 @@ def map_dtype_to_sqlalchemy(dtype):
     Maps Pandas dtypes to SQLAlchemy-compatible types.
     """
     if pd.api.types.is_integer_dtype(dtype):
-        return Integer
+        return BigInteger if dtype == "Int64" else Integer
     elif pd.api.types.is_float_dtype(dtype):
         return Float
     elif pd.api.types.is_bool_dtype(dtype):
@@ -132,7 +133,10 @@ def load_dataset_into_db(dataset_id, engine, retries=5, delay=5, cache_dir="./hf
 
         # Preserve Numeric Columns (Avoid Converting to `object`)
         elif df[col].dtype.name in ["uint16", "uint32", "float64", "int64"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+            if df[col].max() > 2_147_483_647:  # Exceeds standard INT range
+                df[col] = df[col].astype('Int64')  # Convert to `BIGINT`
+            else:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
 
         # Preserve Boolean Columns
         elif df[col].dtype.name == "bool":
