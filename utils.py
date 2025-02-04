@@ -1,3 +1,4 @@
+from decimal import Decimal
 import re
 import ast
 
@@ -72,7 +73,7 @@ def post_process_result(result, expected_type, schema):
     elif expected_type == 'number':
         try:
             for row in result:
-                numeric_values = [float(value) for value in row if isinstance(value, (int, float))]
+                numeric_values = [float(value) for value in row if isinstance(value, (int, float, Decimal))]
                 if numeric_values:
                     return str(numeric_values[0])  # Extract first valid number
         except Exception:
@@ -83,7 +84,7 @@ def post_process_result(result, expected_type, schema):
         try:
             numerical_values = []
             for row in result:
-                row_values = [float(value) for value in row if isinstance(value, (int, float))]
+                row_values = [float(value) for value in row if isinstance(value, (int, float, Decimal))]
 
                 # If two columns exist and first is string, take second (ignore identifiers)
                 if len(row) == 2:
