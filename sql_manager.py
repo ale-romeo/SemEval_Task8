@@ -51,8 +51,11 @@ def generate_sql_prompt(schema, dataset_id, question):
     column_types = '\n'.join([f"- {col}: {dtype}" for col, dtype in zip(schema.columns, schema.dtypes)])
 
     system_prompt = "SYSTEM: You are the best SQL generation assistant."
-    context = "CONTEXT: Use standard SQL syntax. Always use the alias 'X' for the table and do not include any JOIN operations. If your query includes an 'ORDER BY' clause, ensure that all non-aggregated columns in the SELECT clause also appear in a 'GROUP BY' clause."
-    
+    context = (
+        "CONTEXT: Use standard SQL syntax. Always use the alias 'X' for the table and do not include any JOIN operations. "
+        "If your query includes an 'ORDER BY' clause, ensure that all non-aggregated columns in the SELECT clause also appear in a 'GROUP BY' clause."
+    )
+
     prompt = f"""
     {system_prompt}
     {context}
@@ -60,12 +63,11 @@ def generate_sql_prompt(schema, dataset_id, question):
     ### Task
     Generate a SQL query to answer [QUESTION]{question}[/QUESTION].
 
-    Important Instructions:
-    
-The query must use only one table.
-Do not use any JOIN operations.
-Always assign the alias 'X' to the table.
-If your query includes an 'ORDER BY' clause, ensure that all non-aggregated columns in the SELECT clause also appear in a 'GROUP BY' clause.
+    **Important Instructions:**
+    - The query must use only one table.
+    - Do not use any JOIN operations.
+    - Always assign the alias 'X' to the table.
+    - If your query includes an 'ORDER BY' clause, ensure that all non-aggregated columns in the SELECT clause also appear in a 'GROUP BY' clause.
 
     ### Table Schema
     The query will run on ONE SINGLE table named {table_name} with the following schema:
@@ -76,7 +78,7 @@ If your query includes an 'ORDER BY' clause, ensure that all non-aggregated colu
     Example 1:
     Question: "What is the total revenue for all records?"
     Table name: "entrepreneurs"
-    Columns: "-revenue: float"
+    Columns: "- revenue: float"
     SQL:
     SELECT SUM(X.revenue) AS total_revenue
     FROM entrepreneurs AS X
@@ -85,7 +87,7 @@ If your query includes an 'ORDER BY' clause, ensure that all non-aggregated colu
     Example 2:
     Question: "List the names of customers who have made a purchase."
     Table name: "transactions"
-    Columns: "-customer_name: string\n-purchase_amount: float"
+    Columns: "- customer_name: string\n- purchase_amount: float"
     SQL:
     SELECT DISTINCT X.customer_name
     FROM transactions AS X
@@ -94,14 +96,24 @@ If your query includes an 'ORDER BY' clause, ensure that all non-aggregated colu
     Example 3:
     Question: "Retrieve all orders placed after '2020-01-01'."
     Table name: "orders"
-    Columns: "-order_date: datetime\n-order_id: int"
+    Columns: "- order_date: datetime\n- order_id: int"
     SQL:
     SELECT *
     FROM orders AS X
     WHERE X.order_date > '2020-01-01';
 
+    Example 4:
+    Question: "What is the average revenue per customer, ordered by customer name?"
+    Table name: "sales"
+    Columns: "- customer_name: string\n- revenue: float"
+    SQL:
+    SELECT X.customer_name, AVG(X.revenue) AS average_revenue
+    FROM sales AS X
+    GROUP BY X.customer_name
+    ORDER BY X.customer_name;
+
     ### Answer
-    Given the table schema, here is the SQL query that answers [QUESTION]{question}[/QUESTION]
+    Given the table schema, here is the SQL query that answers [QUESTION]{question}[/QUESTION]:
     [SQL]
     """
     return prompt
