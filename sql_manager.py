@@ -33,89 +33,57 @@ def execute_sql_query(conn, query):
         conn.close()  # Ensure connection is closed on error
         return f"Error during execution: {str(e)}"
 
-def generate_sql_prompt(schema, dataset_id, question):
+def generate_sql_prompt(schema, dataset_id, question, predicted_answer_type):
     """
-    Generates a SQL prompt for Natural SQL model.
-
-    Args:
-        df (pd.DataFrame): The dataset schema as a DataFrame.
-        dataset_id (str): The dataset identifier.
-        question (str): The question.
-
-    Returns:
-        str: Formatted SQL query prompt.
+    Generates a SQL prompt for the model with detailed aggregation handling.
     """
     table_name = dataset_id.split('_')[1].lower() if dataset_id != '001_Forbes' else "billionaires"
 
-    # Format column names and data types for readability
     column_types = '\n'.join([f"- {col}: {dtype}" for col, dtype in zip(schema.columns, schema.dtypes)])
 
-    system_prompt = "SYSTEM: You are the best SQL generation assistant."
+    system_prompt = "SYSTEM: You are an expert in writing optimized SQL queries."
     context = (
-        "CONTEXT: Use standard SQL syntax. Always use the alias 'X' for the table and do not include any JOIN operations. "
-        "If your query includes an 'ORDER BY' clause, ensure that all non-aggregated columns in the SELECT clause also appear in a 'GROUP BY' clause."
+        "CONTEXT: Use PostgreSQL syntax. The query must be well-formed, handle NULL values, "
+        "and ensure proper aggregations. If an `ORDER BY` clause is used, all non-aggregated columns "
+        "in the `SELECT` clause must appear in the `GROUP BY` clause."
     )
 
     prompt = f"""
     {system_prompt}
     {context}
 
+    #### Important Instructions:
+    - The query must use only one table.
+    - DO NOT use JOINs.
+    - Always assign the alias `X` to the table.
+    - If your query includes `ORDER BY`, ensure all non-aggregated columns in `SELECT` appear in `GROUP BY`.
+
+    ### Example
+    Handling Aggregations
+    ```
+    SELECT X.category, SUM(CAST(X.sales AS FLOAT)) AS total_sales
+    FROM sales AS X
+    GROUP BY X.category
+    ORDER BY total_sales DESC;
+    ```
+    
     ### Task
     Generate a SQL query to answer [QUESTION]{question}[/QUESTION].
-
-    **Important Instructions:**
-    - The query must use only one table.
-    - Do not use any JOIN operations.
-    - Always assign the alias 'X' to the table.
-    - If your query includes an 'ORDER BY' clause, ensure that all non-aggregated columns in the SELECT clause also appear in a 'GROUP BY' clause.
+    The answer to the question is expected to be of type: {predicted_answer_type}.
 
     ### Table Schema
-    The query will run on ONE SINGLE table named {table_name} with the following schema:
+    The query will run on ONE SINGLE table named `{table_name}` with the following schema:
     {column_types}
 
-    ### Examples
-
-    Example 1:
-    Question: "What is the total revenue for all records?"
-    Table name: "entrepreneurs"
-    Columns: "- revenue: float"
-    SQL:
-    SELECT SUM(X.revenue) AS total_revenue
-    FROM entrepreneurs AS X
-    WHERE X.revenue IS NOT NULL;
-
-    Example 2:
-    Question: "List the names of customers who have made a purchase."
-    Table name: "transactions"
-    Columns: "- customer_name: string\n- purchase_amount: float"
-    SQL:
-    SELECT DISTINCT X.customer_name
-    FROM transactions AS X
-    WHERE X.purchase_amount > 0;
-
-    Example 3:
-    Question: "Retrieve all orders placed after '2020-01-01'."
-    Table name: "orders"
-    Columns: "- order_date: datetime\n- order_id: int"
-    SQL:
-    SELECT *
-    FROM orders AS X
-    WHERE X.order_date > '2020-01-01';
-
-    Example 4:
-    Question: "What is the average revenue per customer, ordered by customer name?"
-    Table name: "sales"
-    Columns: "- customer_name: string\n- revenue: float"
-    SQL:
-    SELECT X.customer_name, AVG(X.revenue) AS average_revenue
-    FROM sales AS X
-    GROUP BY X.customer_name
-    ORDER BY X.customer_name;
+    ### Table
+    This is the table you will be querying:
+    {schema.head(5)}
 
     ### Answer
     Given the table schema, here is the SQL query that answers [QUESTION]{question}[/QUESTION]:
     [SQL]
     """
+    
     return prompt
 
 def map_dtype_to_sqlalchemy(dtype):
@@ -230,65 +198,27 @@ def load_dataset_into_db(dataset_id, engine, retries=5, delay=5, cache_dir="./hf
 
     return conn, df
 
-
 def preprocess_query_for_postgresql(query, schema):
     """
-    Preprocesses the SQL query for PostgreSQL by:
-    1. Ensuring numeric columns are properly cast to FLOAT.
-    2. Fixing ORDER BY issues for numeric fields.
-    3. Fixing SUM(), AVG(), COUNT() on text fields by casting them to NUMERIC.
-    4. Fixing comparisons where TEXT is used as NUMBER or BOOLEAN.
-
-    Args:
-        query (str): The generated SQL query.
-        schema (pd.DataFrame): A DataFrame containing a sample row to infer column types.
-
-    Returns:
-        str: Preprocessed SQL query with fixes applied.
+    Preprocesses SQL queries by:
+    - Ensuring `GROUP BY` includes all non-aggregated columns.
+    - Fixing SUM, AVG, COUNT() on text fields by casting to FLOAT.
+    - Fixing WHERE conditions for numeric and boolean values.
+    - Handling NULL values with COALESCE().
     """
     try:
         if isinstance(schema, pd.DataFrame):
-            df_columns = schema.columns.tolist()  # Get column names
-            column_types = schema.dtypes  # Get column types
+            df_columns = schema.columns.tolist()  
+            column_types = schema.dtypes  
         else:
             raise ValueError("Schema must be a Pandas DataFrame.")
 
-        # Identify column types dynamically
+        # Identify column types
         numeric_columns = [col for col in df_columns if column_types[col] in ["float64", "int64", "Float64", "Int64"]]
         boolean_columns = [col for col in df_columns if column_types[col] in ["bool", "boolean"]]
         text_columns = [col for col in df_columns if column_types[col] in ["object", "string", "category"]]
 
-         # 🔹 **Fix Missing `GROUP BY` Columns**
-        if "GROUP BY" in query:
-            # Extract all selected columns
-            select_columns = re.findall(r'SELECT\s+(.*?)\s+FROM', query, re.IGNORECASE)
-            if select_columns:
-                select_columns = select_columns[0].split(",")
-                select_columns = [col.strip().replace("AS", "").split()[0] for col in select_columns]
-
-                # Extract columns already in GROUP BY
-                group_by_columns = re.findall(r'GROUP BY\s+(.*?)(ORDER BY|LIMIT|$)', query, re.IGNORECASE)
-                if group_by_columns:
-                    group_by_columns = group_by_columns[0][0].split(",")
-                    group_by_columns = [col.strip() for col in group_by_columns]
-                else:
-                    group_by_columns = []
-
-                # Find missing columns and add them
-                missing_group_by = [col for col in select_columns if col not in group_by_columns and col in df_columns]
-                if missing_group_by:
-                    group_by_clause = f"GROUP BY {', '.join(group_by_columns + missing_group_by)}"
-                    query = re.sub(r'GROUP BY\s+(.*?)(ORDER BY|LIMIT|$)', group_by_clause + r' \2', query, flags=re.IGNORECASE)
-
-        # 🔹 **Fix MEDIAN() Calls**
-        query = re.sub(
-            r'MEDIAN\(\s*([\w\.]+)\s*\)',
-            r'PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY \1)',
-            query,
-            flags=re.IGNORECASE
-        )
-
-        # 🔹 Ensure ORDER BY works correctly for numeric columns
+        # ✅ Ensure ORDER BY numeric casting
         for col in numeric_columns:
             query = re.sub(
                 rf'ORDER BY (\w+)\.{col}',
@@ -297,7 +227,7 @@ def preprocess_query_for_postgresql(query, schema):
                 flags=re.IGNORECASE
             )
 
-        # 🔹 Fix SUM, AVG, COUNT on text fields by casting to FLOAT
+        # ✅ Fix SUM, AVG, COUNT on text fields by casting to FLOAT
         for col in numeric_columns:
             query = re.sub(
                 rf'(SUM|AVG|COUNT)\(\s*{col}\s*\)',
@@ -306,7 +236,7 @@ def preprocess_query_for_postgresql(query, schema):
                 flags=re.IGNORECASE
             )
 
-        # 🔹 Fix numeric comparisons (TEXT stored as NUMBER)
+        # ✅ Fix comparisons (TEXT vs. NUMBER)
         for col in numeric_columns:
             query = re.sub(
                 rf'WHERE\s+{col}\s*([=><!]+)\s*(\d+)',
@@ -315,7 +245,7 @@ def preprocess_query_for_postgresql(query, schema):
                 flags=re.IGNORECASE
             )
 
-        # 🔹 Fix boolean comparisons (TEXT stored as BOOLEAN)
+        # ✅ Fix boolean comparisons (TEXT vs. BOOLEAN)
         for col in boolean_columns:
             query = re.sub(
                 rf'WHERE\s+{col}\s*=\s*(TRUE|FALSE)',
@@ -324,14 +254,32 @@ def preprocess_query_for_postgresql(query, schema):
                 flags=re.IGNORECASE
             )
 
-        # 🔹 Fix text comparisons (Ensure correct handling of category columns)
-        for col in text_columns:
-            query = re.sub(
-                rf'WHERE\s+{col}\s*=\s*([^\'"].+?)\s*(AND|OR|$)',
-                rf'WHERE {col}::TEXT = \1 \2',
-                query,
-                flags=re.IGNORECASE
-            )
+        # ✅ Fix missing `GROUP BY` columns
+        if "GROUP BY" in query:
+            select_columns = re.findall(r'SELECT\s+(.*?)\s+FROM', query, re.IGNORECASE)
+            if select_columns:
+                select_columns = select_columns[0].split(",")
+                select_columns = [col.strip().replace("AS", "").split()[0] for col in select_columns]
+
+                group_by_columns = re.findall(r'GROUP BY\s+(.*?)(ORDER BY|LIMIT|$)', query, re.IGNORECASE)
+                if group_by_columns:
+                    group_by_columns = group_by_columns[0][0].split(",")
+                    group_by_columns = [col.strip() for col in group_by_columns]
+                else:
+                    group_by_columns = []
+
+                missing_group_by = [col for col in select_columns if col not in group_by_columns and col in df_columns]
+                if missing_group_by:
+                    group_by_clause = f"GROUP BY {', '.join(group_by_columns + missing_group_by)}"
+                    query = re.sub(r'GROUP BY\s+(.*?)(ORDER BY|LIMIT|$)', group_by_clause + r' \2', query, flags=re.IGNORECASE)
+
+        # ✅ Fix `MEDIAN()` Calls
+        query = re.sub(
+            r'MEDIAN\(\s*([\w\.]+)\s*\)',
+            r'PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY \1)',
+            query,
+            flags=re.IGNORECASE
+        )
 
         return query
 

@@ -24,7 +24,6 @@ def process_batch(tokenizer, model, engine, predictor, batch):
     results = []
     questions = [qa['question'] for qa in batch]
     dataset_ids = [qa['dataset'] for qa in batch]
-    answers = [qa['answer'] for qa in batch]
 
     # Predict answer types for all questions
     classifier, vectorizer, label_encoder = predictor
@@ -32,7 +31,7 @@ def process_batch(tokenizer, model, engine, predictor, batch):
     predicted_labels = classifier.predict(question_vectors)
     predicted_types = label_encoder.inverse_transform(predicted_labels)
 
-    for idx, (question, dataset_id, predicted_type, answer) in enumerate(zip(questions, dataset_ids, predicted_types, answers)):
+    for idx, (question, dataset_id, predicted_type) in enumerate(zip(questions, dataset_ids, predicted_types)):
         try:
             # Ensure tokenizer has a padding token
             if tokenizer.pad_token is None:
@@ -40,7 +39,7 @@ def process_batch(tokenizer, model, engine, predictor, batch):
 
             conn, schema = load_dataset_into_db(dataset_id, engine)
 
-            prompt = generate_sql_prompt(schema, dataset_id, question)
+            prompt = generate_sql_prompt(schema, dataset_id, question, predicted_type)
 
             # Tokenize and generate SQL queries
             inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True).to("cuda")
@@ -61,9 +60,6 @@ def process_batch(tokenizer, model, engine, predictor, batch):
                 continue
 
             preprocessed_query = preprocess_query_for_postgresql(generated_query, schema)
-            print(question)
-            print(preprocessed_query)
-            
             try:
                 result = execute_sql_query(conn, preprocessed_query)
 
@@ -71,7 +67,6 @@ def process_batch(tokenizer, model, engine, predictor, batch):
                 result = f"Execution Error: {str(e)}"
 
             processed_result = post_process_result(result, predicted_type, schema)
-            print(result, processed_result, answer)
             results.append({"question": question, "result": processed_result, "type": predicted_type})
 
         except Exception as e:
