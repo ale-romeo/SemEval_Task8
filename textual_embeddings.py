@@ -35,7 +35,7 @@ def textual_embeddings(all_qa):
 
     print(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
 
-    joblib.dump(best_model, "SemEval_Task8/best_answer_type_model.pkl")
-    joblib.dump(vectorizer, "SemEval_Task8/tfidf_vectorizer.pkl")
-    joblib.dump(label_encoder, "SemEval_Task8/label_encoder.pkl")
+    joblib.dump(best_model, "SemEval_Task8/type_predictor/best_answer_type_model.pkl")
+    joblib.dump(vectorizer, "SemEval_Task8/type_predictor/tfidf_vectorizer.pkl")
+    joblib.dump(label_encoder, "SemEval_Task8/type_predictor/label_encoder.pkl")
     print("Model, vectorizer, and label encoder saved successfully!")
