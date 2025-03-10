@@ -66,6 +66,24 @@ def generate_sql_prompt(schema, dataset_id, question, predicted_answer_type):
     GROUP BY X.category
     ORDER BY total_sales DESC;
     ```
+    Example 1:
+    Question: "What is the total revenue for all records?"
+    Table name: "entrepreneurs"
+    Columns: "- revenue: float"
+    SQL:
+    SELECT SUM(X.revenue) AS total_revenue
+    FROM entrepreneurs AS X
+    WHERE X.revenue IS NOT NULL;
+
+    Example 2:
+    Question: "List the names of customers who have made a purchase."
+    Table name: "transactions"
+    Columns: "- customer_name: string\n- purchase_amount: float"
+    SQL:
+    SELECT DISTINCT X.customer_name
+    FROM transactions AS X
+    WHERE X.purchase_amount > 0;
+
     
     ### Task
     Generate a SQL query to answer [QUESTION]{question}[/QUESTION].
